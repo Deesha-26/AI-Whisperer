@@ -69,9 +69,26 @@ app.post("/api/analyze", async (req, res) => {
 
     res.json({ whisper: response.choices[0].message.content });
   } catch (err) {
-  console.error("ANALYZE_ERROR:", err?.message ?? err);
-  console.error("ANALYZE_ERROR_RAW:", err);
-  res.status(500).json({ error: "Analysis failed" });
+  // Safe structured logging (does NOT print your API key)
+  console.error("ANALYZE_ERROR_MESSAGE:", err?.message);
+  console.error("ANALYZE_ERROR_NAME:", err?.name);
+  console.error("ANALYZE_ERROR_STATUS:", err?.status);
+  console.error("ANALYZE_ERROR_CODE:", err?.code);
+  console.error("ANALYZE_ERROR_TYPE:", err?.type);
+
+  // Some OpenAI SDK errors include response details
+  console.error("ANALYZE_ERROR_RESPONSE:", err?.response?.data ?? err?.error ?? null);
+
+  res.status(500).json({
+    error: "Analysis failed",
+    // TEMP: return minimal debug info to you (remove after fix)
+    debug: {
+      message: err?.message,
+      status: err?.status,
+      code: err?.code,
+      type: err?.type,
+    },
+  });
 }
 });
 
