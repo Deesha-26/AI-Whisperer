@@ -10,6 +10,9 @@ app.use(express.json());
 
 const upload = multer({ dest: "uploads/" });
 
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
@@ -53,3 +56,17 @@ app.post("/analyze", async (req, res) => {
 });
 
 app.listen(4000, () => console.log("AI server running on port 4000"));
+
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Serve frontend build
+app.use(express.static(path.join(__dirname, "../dist")));
+
+// SPA fallback
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "../dist/index.html"));
+});
