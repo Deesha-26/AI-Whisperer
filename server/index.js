@@ -10,7 +10,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const upload = multer({ dest: "uploads/" });
+const uploadDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+const upload = multer({ dest: uploadDir });
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -39,10 +42,12 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
 
     fs.unlinkSync(req.file.path);
     res.json({ text: transcript.text });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Transcription failed" });
-  }
+  } 
+  catch (err) {
+  console.error("ANALYZE_ERROR:", err?.message ?? err);
+  console.error("ANALYZE_ERROR_RAW:", err);
+  res.status(500).json({ error: "Analysis failed" });
+}
 });
 
 // 🧠 Transcript → coaching whisper
@@ -64,9 +69,10 @@ app.post("/api/analyze", async (req, res) => {
 
     res.json({ whisper: response.choices[0].message.content });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Analysis failed" });
-  }
+  console.error("ANALYZE_ERROR:", err?.message ?? err);
+  console.error("ANALYZE_ERROR_RAW:", err);
+  res.status(500).json({ error: "Analysis failed" });
+}
 });
 
 // --------------------
