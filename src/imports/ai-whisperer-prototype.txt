@@ -1,0 +1,107 @@
+Add prototype interactions to the existing AI Whisperer design. Do not redesign any UI. Only add navigation and interactions between existing frames.
+
+Define the Prototype Flow
+
+Set the Landing page as the starting frame.
+
+Create the following navigation flow:
+
+Landing → Meetings → Live Meeting → Live Meeting (Whispers) → Meeting Summary → Growth
+
+Use Smart Animate transitions unless specified otherwise.
+
+Wire the “Watch demo” Button
+
+On the Landing screen:
+
+Select the Watch demo button and add:
+
+Trigger: On Click
+
+Action: Navigate to Live Meeting frame
+
+Animation: Smart Animate
+
+Duration: 300ms
+
+Easing: Ease Out
+
+This button should take the user directly into the demo meeting.
+
+Wire the Primary CTA Button
+
+On the Landing screen:
+
+Select Start a coached meeting and add:
+
+Trigger: On Click
+
+Action: Navigate to Meetings frame
+
+Animation: Smart Animate
+
+Duration: 300ms
+
+Wire the Meetings Screen
+
+On the Meetings screen:
+
+Select Start instant meeting button and add:
+
+Trigger: On Click
+
+Action: Navigate to Live Meeting (no whispers) frame
+
+Animation: Dissolve
+
+Duration: 300ms
+
+Create the Whisper Demo Transition
+
+On the Live Meeting (no whispers) frame:
+
+Add a hidden hotspot covering the bottom-right area of the screen.
+
+Add interaction:
+
+Trigger: On Click
+
+Action: Navigate to Live Meeting (with whispers) frame
+
+Animation: Smart Animate
+
+Duration: 400ms
+
+This creates the “AI whispers appear” moment.
+
+Wire End Meeting
+
+On the Live Meeting (with whispers) frame:
+
+Select the End Meeting button and add:
+
+Trigger: On Click
+
+Action: Navigate to Meeting Summary frame
+
+Animation: Smart Animate
+
+Duration: 300ms
+
+Wire Summary → Growth
+
+On the Meeting Summary frame:
+
+Select View personal progress button and add:
+
+Trigger: On Click
+
+Action: Navigate to Growth frame
+
+Animation: Smart Animate
+
+Duration: 300ms
+
+Goal
+
+Make the entire product a fully clickable demo prototype while preserving the existing design and layout.
