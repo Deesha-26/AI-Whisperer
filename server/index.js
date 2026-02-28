@@ -79,7 +79,7 @@ const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, "../dist")));
 
 // SPA fallback (IMPORTANT: keep this LAST)
-app.get("*", (req, res) => {
+app.get(/^(?!\/api).*/, (req, res) => {
   res.sendFile(path.join(__dirname, "../dist/index.html"));
 });
 
