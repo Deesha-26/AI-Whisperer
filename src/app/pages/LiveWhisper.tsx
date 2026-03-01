@@ -1,7 +1,31 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { suggestWhisper } from "../lib/whisperEngine";
 
 type Mode = "heuristic" | "llm" | "hybrid";
+
+function Pill({
+  tone,
+  children
+}: {
+  tone: "green" | "gray" | "purple" | "amber";
+  children: React.ReactNode;
+}) {
+  const cls =
+    tone === "green"
+      ? "bg-green-100 text-green-800 border-green-200"
+      : tone === "purple"
+      ? "bg-purple-100 text-purple-800 border-purple-200"
+      : tone === "amber"
+      ? "bg-amber-100 text-amber-800 border-amber-200"
+      : "bg-gray-100 text-gray-800 border-gray-200";
+  return (
+    <span
+      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${cls}`}
+    >
+      {children}
+    </span>
+  );
+}
 
 export function LiveWhisper() {
   const [transcript, setTranscript] = useState("");
@@ -9,22 +33,29 @@ export function LiveWhisper() {
   const [isRecording, setIsRecording] = useState(false);
   const [persona, setPersona] = useState("Interview");
   const [mode, setMode] = useState<Mode>("hybrid");
+  const [lastTipAt, setLastTipAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
 
-  // 🎤 Speech Recognition
-  useEffect(() => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
+  const speechSupported = useMemo(() => {
+    const w = window as any;
+    return Boolean(w.SpeechRecognition || w.webkitSpeechRecognition);
+  }, []);
 
-    if (!SpeechRecognition) return;
+  // 🎧 Speech Recognition
+  useEffect(() => {
+    if (!speechSupported) return;
+
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
 
     recognition.onresult = (event: any) => {
+      setError(null);
       let text = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         text += event.results[i][0].transcript;
@@ -32,21 +63,40 @@ export function LiveWhisper() {
       setTranscript(text);
     };
 
+    recognition.onerror = (e: any) => {
+      setError(e?.error ? `Speech error: ${e.error}` : "Speech error");
+    };
+
     recognitionRef.current = recognition;
-  }, []);
+
+    return () => {
+      try {
+        recognition.stop?.();
+      } catch {}
+    };
+  }, [speechSupported]);
 
   function toggleRecording() {
-    if (!recognitionRef.current) return;
-
-    if (isRecording) {
-      recognitionRef.current.stop();
-    } else {
-      recognitionRef.current.start();
+    setError(null);
+    if (!speechSupported) {
+      setError("Speech recognition not supported in this browser. Try Chrome.");
+      return;
     }
-    setIsRecording(!isRecording);
+    if (!recognitionRef.current) {
+      setError("Speech recognition not initialized.");
+      return;
+    }
+
+    try {
+      if (isRecording) recognitionRef.current.stop();
+      else recognitionRef.current.start();
+      setIsRecording(!isRecording);
+    } catch {
+      setError("Could not start microphone. Check permissions.");
+    }
   }
 
-  // ⏱ Whisper generation loop
+  // ⏱ Whisper generation loop (every ~8s)
   useEffect(() => {
     const interval = setInterval(async () => {
       if (!transcript) return;
@@ -57,7 +107,7 @@ export function LiveWhisper() {
         tip = suggestWhisper(transcript, persona as any, whispers);
       }
 
-      // optional server call (works even without API key)
+      // optional server call (works even without API key if /api/analyze fallback exists)
       if (!tip && mode !== "heuristic") {
         try {
           const res = await fetch("/api/analyze", {
@@ -68,62 +118,227 @@ export function LiveWhisper() {
           const data = await res.json();
           tip = data.whispers?.[0] ?? null;
         } catch {
-          // fallback silently
+          // silent fallback
         }
       }
 
       if (tip && !whispers.includes(tip)) {
-        setWhispers(w => [...w.slice(-5), tip]);
+        setWhispers((w) => [...w, tip].slice(-12));
+        setLastTipAt(Date.now());
       }
     }, 8000);
 
     return () => clearInterval(interval);
   }, [transcript, persona, mode, whispers]);
 
+  const statusTone = !speechSupported ? "amber" : isRecording ? "green" : "gray";
+  const statusText = !speechSupported ? "Mic not supported" : isRecording ? "Listening" : "Idle";
+  const modeLabel =
+    mode === "hybrid" ? "Smart Coach" : mode === "heuristic" ? "Local Coach" : "Cloud Coach";
+
   return (
-    <div className="p-8 max-w-3xl mx-auto space-y-6">
-      <h1 className="text-3xl font-bold">🎧 Live Whisper</h1>
+    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
+      <div className="mx-auto max-w-6xl px-6 py-10">
+        {/* Header */}
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-2xl bg-black text-white flex items-center justify-center shadow-sm">
+                <span className="text-lg">🎧</span>
+              </div>
+              <div>
+                <h1 className="text-3xl font-semibold tracking-tight">Live Whisper</h1>
+                <p className="text-sm text-gray-600">
+                  Real-time micro-coaching while you speak — crisp phrasing, structure, confidence.
+                </p>
+              </div>
+            </div>
 
-      <div className="flex gap-4">
-        <select
-          value={persona}
-          onChange={e => setPersona(e.target.value)}
-          className="border p-2"
-        >
-          <option>Interview</option>
-          <option>Standup</option>
-          <option>Sales Call</option>
-          <option>Design Critique</option>
-        </select>
-
-        <select
-          value={mode}
-          onChange={e => setMode(e.target.value as Mode)}
-          className="border p-2"
-        >
-          <option value="hybrid">Smart Coach</option>
-          <option value="heuristic">Local Coach</option>
-          <option value="llm">Cloud Coach</option>
-        </select>
-
-        <button
-          onClick={toggleRecording}
-          className="bg-blue-600 text-white px-4 py-2 rounded"
-        >
-          {isRecording ? "Stop Mic" : "Start Mic"}
-        </button>
-      </div>
-
-      <div className="bg-gray-100 p-4 rounded min-h-[120px]">
-        {transcript || "Start speaking…"}
-      </div>
-
-      <div className="space-y-2">
-        {whispers.map((w, i) => (
-          <div key={i} className="bg-purple-100 p-3 rounded">
-            💡 {w}
+            <div className="flex flex-wrap items-center gap-2">
+              <Pill tone={statusTone as any}>
+                <span className={`h-2 w-2 rounded-full ${isRecording ? "bg-green-600" : "bg-gray-400"}`} />
+                {statusText}
+              </Pill>
+              <Pill tone="purple">{modeLabel}</Pill>
+              <Pill tone="gray">{persona}</Pill>
+              {lastTipAt ? (
+                <Pill tone="gray">
+                  Last tip {Math.max(1, Math.round((Date.now() - lastTipAt) / 1000))}s ago
+                </Pill>
+              ) : (
+                <Pill tone="gray">Tips every ~8s</Pill>
+              )}
+            </div>
           </div>
-        ))}
+
+          {/* Controls */}
+          <div className="flex flex-col gap-3 md:flex-row md:items-center">
+            <select
+              value={persona}
+              onChange={(e) => setPersona(e.target.value)}
+              className="w-full md:w-48 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-black/10"
+            >
+              <option>Interview</option>
+              <option>Standup</option>
+              <option>Sales Call</option>
+              <option>Design Critique</option>
+              <option>General</option>
+            </select>
+
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as Mode)}
+              className="w-full md:w-48 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-black/10"
+            >
+              <option value="hybrid">Smart Coach</option>
+              <option value="heuristic">Local Coach</option>
+              <option value="llm">Cloud Coach</option>
+            </select>
+
+            <button
+              onClick={toggleRecording}
+              className={`inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold shadow-sm transition
+                ${
+                  isRecording
+                    ? "bg-gray-900 text-white hover:bg-gray-800"
+                    : "bg-blue-600 text-white hover:bg-blue-700"
+                }`}
+            >
+              <span className="text-base">{isRecording ? "⏹" : "🎙️"}</span>
+              {isRecording ? "Stop" : "Start"}
+            </button>
+          </div>
+        </div>
+
+        {error ? (
+          <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {error}
+          </div>
+        ) : null}
+
+        {/* Main grid */}
+        <div className="mt-8 grid gap-6 lg:grid-cols-5">
+          {/* Transcript */}
+          <div className="lg:col-span-3">
+            <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold">What you’re saying</span>
+                  <span className="text-xs text-gray-500">(live)</span>
+                </div>
+                <button
+                  onClick={() => setTranscript("")}
+                  className="text-xs text-gray-500 hover:text-gray-700"
+                  disabled={!transcript}
+                >
+                  Clear
+                </button>
+              </div>
+
+              <div className="px-5 py-4">
+                <div className="min-h-[260px] whitespace-pre-wrap rounded-xl bg-gray-50 p-4 text-sm leading-6 text-gray-800">
+                  {transcript || (
+                    <span className="text-gray-500">
+                      Start the mic and speak naturally — your live transcript shows here.
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Quick coaching cards */}
+            <div className="mt-6 grid gap-4 md:grid-cols-3">
+              <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                <div className="text-xs font-semibold text-gray-700">Goal</div>
+                <div className="mt-2 text-sm text-gray-600">
+                  {persona === "Interview"
+                    ? "Communicate impact + clarity"
+                    : persona === "Standup"
+                    ? "Align the team quickly"
+                    : persona === "Sales Call"
+                    ? "Drive to a clear next step"
+                    : "Explain decisions + tradeoffs"}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                <div className="text-xs font-semibold text-gray-700">Structure</div>
+                <div className="mt-2 text-sm text-gray-600">
+                  {persona === "Interview"
+                    ? "STAR (S/T/A/R)"
+                    : persona === "Standup"
+                    ? "Yesterday → Today → Blockers"
+                    : persona === "Sales Call"
+                    ? "Problem → Value → Ask"
+                    : "Goal → Constraint → Tradeoff"}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                <div className="text-xs font-semibold text-gray-700">Delivery</div>
+                <div className="mt-2 text-sm text-gray-600">
+                  Short sentences. One point at a time. Pause instead of filler words.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Whisper feed */}
+          <div className="lg:col-span-2">
+            <div className="rounded-2xl border border-gray-200 bg-white shadow-sm">
+              <div className="border-b border-gray-100 px-5 py-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Whispers</div>
+                    <div className="text-xs text-gray-500">micro-coaching as you speak</div>
+                  </div>
+                  <button
+                    onClick={() => setWhispers([])}
+                    className="text-xs text-gray-500 hover:text-gray-700"
+                    disabled={whispers.length === 0}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              <div className="max-h-[520px] overflow-auto px-5 py-4">
+                {whispers.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-4 text-sm text-gray-600">
+                    Your whispers will show up here once you start talking.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {whispers
+                      .slice()
+                      .reverse()
+                      .map((w, i) => (
+                        <div
+                          key={`${i}-${w.slice(0, 12)}`}
+                          className="rounded-xl border border-gray-100 bg-white p-3 shadow-sm"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="mt-0.5 h-8 w-8 flex-shrink-0 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
+                              💬
+                            </div>
+                            <div className="text-sm text-gray-800">{w}</div>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-gray-100 px-5 py-3 text-xs text-gray-500">
+                Tip sources: {mode === "llm" ? "Cloud coach" : mode === "heuristic" ? "Local coach" : "Smart mix"}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-8 text-xs text-gray-500">
+          Pro tip: finish each thought with a clear “next step” to sound decisive.
+        </div>
       </div>
     </div>
   );
