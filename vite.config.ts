@@ -19,4 +19,12 @@ export default defineConfig({
 
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
+
+  // Local dev convenience: if you run `npm run dev:full`, the API runs on :4000.
+  // This avoids CORS and lets the frontend call `/api/*`.
+  server: {
+    proxy: {
+      '/api': 'http://localhost:4000',
+    },
+  },
 })

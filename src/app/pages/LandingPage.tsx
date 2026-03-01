@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router';
+import { useNavigate } from 'react-router-dom';
 import { TopNav } from '../components/TopNav';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';

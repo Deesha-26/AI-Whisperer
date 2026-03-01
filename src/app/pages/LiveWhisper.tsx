@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "../components/Button";
-import { VideoTile } from "../components/VideoTile";
 import { MetricCard } from "../components/MetricCard";
 import { WhisperCard } from "../components/WhisperCard";
-import { Clock, Mic, MicOff } from "lucide-react";
+import { Clock, Mic, MicOff, Sparkles, Keyboard, ArrowLeft } from "lucide-react";
 
-type WhisperType = "info" | "success";
+type WhisperType = "info" | "success" | "warning";
+type Persona = "Interview" | "Standup" | "Sales Call" | "Design Critique";
+type WhisperMode = "Heuristic" | "LLM" | "Hybrid";
 
 type Whisper = {
   message: string;
   type: WhisperType;
   timestamp: string;
+  source?: "heuristic" | "llm";
 };
 
 declare global {
@@ -31,11 +33,39 @@ function nowLabel() {
   return "Just now";
 }
 
+function computeWhisperQuality(whispers: Whisper[], durationSec: number) {
+  const mins = Math.max(0.1, durationSec / 60);
+  const rate = whispers.length / mins;
+  const recent = whispers.slice(0, 6).map((w) => w.message.trim().toLowerCase());
+  const uniq = new Set(recent).size;
+  const repetition = recent.length > 0 ? 1 - uniq / recent.length : 0;
+
+  const rateScore = rate < 2 ? 0 : rate < 4 ? 1 : rate <= 10 ? 2 : rate <= 14 ? 1 : 0;
+  const repScore = repetition < 0.15 ? 2 : repetition < 0.35 ? 1 : 0;
+  const score = rateScore + repScore;
+
+  if (score >= 3) return { label: "Helpful", tone: "success" as const };
+  if (score >= 2) return { label: "Okay", tone: "info" as const };
+  return { label: "Noisy", tone: "warning" as const };
+}
+
+function SkeletonWhisper() {
+  return (
+    <div className="bg-white rounded-[16px] border border-[#E6E8EC] p-5 mb-3 shadow-[0_8px_24px_rgba(0,0,0,0.06)] animate-pulse">
+      <div className="h-3 w-5/6 bg-gray-200 rounded mb-2" />
+      <div className="h-3 w-3/5 bg-gray-200 rounded" />
+      <div className="h-2 w-24 bg-gray-200 rounded mt-3" />
+    </div>
+  );
+}
+
 export function LiveWhisper() {
   const navigate = useNavigate();
   const { id } = useParams();
 
   const [duration, setDuration] = useState(0);
+  const [persona, setPersona] = useState<Persona>("Standup");
+  const [mode, setMode] = useState<WhisperMode>("Hybrid");
 
   const SpeechRecognitionCtor = useMemo(() => {
     return window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -47,6 +77,7 @@ export function LiveWhisper() {
   const [transcript, setTranscript] = useState("");
   const [whispers, setWhispers] = useState<Whisper[]>([]);
   const [statusLine, setStatusLine] = useState<string>("Not listening");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const recRef = useRef<any>(null);
 
@@ -54,13 +85,40 @@ export function LiveWhisper() {
   const lastWhisperAtRef = useRef<number>(0);
   const lastTipRef = useRef<string>("");
 
-  const talkSecondsRef = useRef<number>(0);
-  const silenceSecondsRef = useRef<number>(0);
+  const lastAnalyzeAtRef = useRef<number>(0);
+  const lastAnalyzedLenRef = useRef<number>(0);
+  const lastLLMTipRef = useRef<string>("");
+  const inflightRef = useRef<boolean>(false);
 
   useEffect(() => {
     const t = setInterval(() => setDuration((d) => d + 1), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || (e.target as any)?.isContentEditable) return;
+
+      const k = e.key.toLowerCase();
+      if (k === "m") {
+        e.preventDefault();
+        setIsListening((v) => !v);
+      }
+      if (k === "w") {
+        e.preventDefault();
+        setMode((m) => (m === "Heuristic" ? "LLM" : m === "LLM" ? "Hybrid" : "Heuristic"));
+      }
+      if (k === "escape") {
+        e.preventDefault();
+        navigate(`/meeting/live/${id ?? "instant"}`);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [navigate, id]);
 
   // Start/Stop recognition
   useEffect(() => {
@@ -128,183 +186,199 @@ export function LiveWhisper() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isListening, SpeechRecognitionCtor]);
 
-  // Whisper generation rules (every 2 seconds)
+  function addWhisper(message: string, type: WhisperType, source: Whisper["source"]) {
+    const tip = message.trim();
+    if (!tip) return;
+    if (tip.toLowerCase() === lastTipRef.current.toLowerCase()) return;
+    lastTipRef.current = tip;
+    setWhispers((prev) => [{ message: tip, type, timestamp: nowLabel(), source }, ...prev].slice(0, 12));
+  }
+
+  function heuristicTip(delta: number, fullTranscript: string) {
+    const lower = fullTranscript.toLowerCase();
+    if (delta > 140) return { tip: "Long turn—pause and invite feedback.", type: "info" as const };
+    if (lower.includes("um") || lower.includes("uh")) return { tip: "Reduce fillers—take a short breath.", type: "info" as const };
+    if (lower.includes("i think") || lower.includes("maybe")) return { tip: "Be specific: state a clear recommendation.", type: "success" as const };
+    return { tip: "Ask a quick question to pull others in.", type: "success" as const };
+  }
+
+  async function requestLLMTip(latestTranscript: string) {
+    if (inflightRef.current) return;
+    inflightRef.current = true;
+
+    try {
+      setIsAnalyzing(true);
+      const tail = latestTranscript.slice(-900);
+
+      const resp = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: tail, persona, style: mode === "LLM" ? "direct" : "balanced" }),
+      });
+
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        addWhisper("LLM unavailable—using on-device coaching.", "warning", "heuristic");
+        return;
+      }
+
+      const tip: string = (data?.whisper ?? "").toString();
+      const tag: string = (data?.tag ?? "").toString();
+      if (tip.trim().toLowerCase() === lastLLMTipRef.current.trim().toLowerCase()) return;
+      lastLLMTipRef.current = tip.trim();
+
+      const mappedType: WhisperType =
+        tag === "confidence" ? "success" : tag === "clarity" ? "info" : tag === "pace" ? "info" : "success";
+
+      addWhisper(tip, mappedType, "llm");
+    } catch (e) {
+      console.error(e);
+      addWhisper("LLM tip failed—staying on-device.", "warning", "heuristic");
+    } finally {
+      inflightRef.current = false;
+      setIsAnalyzing(false);
+    }
+  }
+
+  // Whisper loop
   useEffect(() => {
     if (!isListening) return;
 
     const interval = setInterval(() => {
       const currentLen = transcript.length;
       const delta = currentLen - lastLenRef.current;
-
-      if (delta > 8) talkSecondsRef.current += 2;
-      else silenceSecondsRef.current += 2;
-
       lastLenRef.current = currentLen;
 
-      if (delta <= 20) {
-        setStatusLine("Listening… (no significant speech detected)");
-        return;
-      }
-
-      setStatusLine("Listening… (speech detected)");
+      if (delta <= 20) return;
 
       const now = Date.now();
-      const cooldownMs = 7000;
+      const cooldownMs = 8000;
       if (now - lastWhisperAtRef.current < cooldownMs) return;
-
-      const lower = transcript.toLowerCase();
-
-      let tip = "";
-      let type: WhisperType = "info";
-
-      if (delta > 160) {
-        tip = "Pause—invite reactions before continuing.";
-        type = "info";
-      } else if (lower.includes("sorry") || lower.includes("my bad")) {
-        tip = "Acknowledge briefly, then move forward confidently.";
-        type = "success";
-      } else if (lower.includes("like") || lower.includes("um") || lower.includes("uh")) {
-        tip = "Reduce fillers—slow slightly and land key points.";
-        type = "info";
-      } else if (lower.includes("we should") || lower.includes("let’s")) {
-        tip = "Great—assign an owner and a next step.";
-        type = "success";
-      } else {
-        tip = "Ask a quick question to pull others in.";
-        type = "info";
-      }
-
-      if (tip === lastTipRef.current) return;
-
-      lastTipRef.current = tip;
       lastWhisperAtRef.current = now;
 
-      setWhispers((prev) => [{ message: tip, type, timestamp: nowLabel() }, ...prev].slice(0, 12));
+      if (mode === "Heuristic" || mode === "Hybrid") {
+        const { tip, type } = heuristicTip(delta, transcript);
+        addWhisper(tip, type, "heuristic");
+      }
+
+      if (mode === "LLM" || mode === "Hybrid") {
+        const llmMinMs = 9000;
+        const grewEnough = currentLen - lastAnalyzedLenRef.current > 80;
+        if (grewEnough && now - lastAnalyzeAtRef.current > llmMinMs) {
+          lastAnalyzeAtRef.current = now;
+          lastAnalyzedLenRef.current = currentLen;
+          requestLLMTip(transcript);
+        }
+      }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [isListening, transcript]);
+  }, [isListening, transcript, mode, persona]);
 
-  const talkTotal = talkSecondsRef.current + silenceSecondsRef.current;
-  const talkPct = talkTotal > 0 ? Math.round((talkSecondsRef.current / talkTotal) * 100) : 0;
-
-  const engagement = Math.min(95, Math.max(50, 70 + Math.round((100 - Math.abs(50 - talkPct)) / 10)));
-  const clarity = Math.min(95, Math.max(45, 75 - Math.round(Math.max(0, talkPct - 60) / 2)));
-
-  const participants = [
-    { name: "You", isSelf: true, isActive: isListening },
-    { name: "Sarah", isSelf: false, isActive: false },
-    { name: "Daniel", isSelf: false, isActive: false },
-    { name: "Priya", isSelf: false, isActive: false },
-  ];
+  const quality = computeWhisperQuality(whispers, duration);
 
   return (
-    <div className="h-screen bg-[#111318] flex flex-col">
-      {/* Top Bar */}
-      <div className="bg-gray-900 border-b border-gray-800 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h3 className="text-white text-lg font-semibold">Product Standup</h3>
+    <div className="h-screen bg-[#F6F8FB] flex flex-col">
+      {/* Top */}
+      <div className="bg-white border-b border-[#E6E8EC] px-6 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Button variant="secondary" onClick={() => navigate(`/meeting/live/${id ?? "instant"}`)} className="gap-2">
+            <ArrowLeft className="w-4 h-4" /> Back
+          </Button>
 
-          <div className="flex items-center gap-2 text-gray-400">
+          <div className="flex items-center gap-2 text-gray-600">
             <Clock className="w-4 h-4" />
             <span className="text-sm font-mono">{formatClock(duration)}</span>
           </div>
 
-          <div className="text-xs text-gray-400 hidden md:block">
+          <div className="text-xs text-gray-500 hidden md:block">
             {isSupported ? statusLine : "Speech recognition not supported in this browser"}
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          {isSupported && (
-            <Button
-              variant="secondary"
-              onClick={() => setIsListening((v) => !v)}
-              className="text-sm py-2 gap-2"
+          <div className="hidden md:flex items-center gap-2 bg-white border border-[#E6E8EC] rounded-lg px-3 py-2">
+            <Sparkles className="w-4 h-4 text-gray-700" />
+            <select
+              value={persona}
+              onChange={(e) => setPersona(e.target.value as Persona)}
+              className="bg-transparent text-gray-800 text-sm outline-none"
             >
+              <option>Interview</option>
+              <option>Standup</option>
+              <option>Sales Call</option>
+              <option>Design Critique</option>
+            </select>
+          </div>
+
+          <div className="hidden md:flex items-center gap-2 bg-white border border-[#E6E8EC] rounded-lg px-3 py-2">
+            <span className="text-xs text-gray-600">Mode</span>
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as WhisperMode)}
+              className="bg-transparent text-gray-800 text-sm outline-none"
+            >
+              <option>Hybrid</option>
+              <option>Heuristic</option>
+              <option>LLM</option>
+            </select>
+          </div>
+
+          {isSupported && (
+            <Button variant="secondary" onClick={() => setIsListening((v) => !v)} className="gap-2">
               {isListening ? (
                 <>
-                  <MicOff className="w-4 h-4" /> Stop Listening
+                  <MicOff className="w-4 h-4" /> Stop (M)
                 </>
               ) : (
                 <>
-                  <Mic className="w-4 h-4" /> Start Listening
+                  <Mic className="w-4 h-4" /> Start (M)
                 </>
               )}
             </Button>
           )}
-
-          <Button
-            variant="secondary"
-            onClick={() => navigate(`/meeting/live/${id ?? "instant"}`)}
-            className="text-sm py-2"
-          >
-            Hide Whispers
-          </Button>
-
-          <Button variant="danger" onClick={() => navigate(`/meeting/summary/${id ?? "instant"}`)}>
-            End Meeting
-          </Button>
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Video Grid */}
-        <div className="flex-1 p-8 bg-white">
-          <div className="grid grid-cols-2 gap-6 max-w-4xl mx-auto">
-            {participants.map((p) => (
-              <VideoTile key={p.name} name={p.name} isSelf={p.isSelf} isActive={p.isActive} />
-            ))}
-          </div>
-
-          <div className="max-w-4xl mx-auto mt-6">
-            <div className="bg-[#F6F8FB] rounded-xl border border-[#E6E8EC] p-4">
-              <div className="text-sm font-semibold text-[#111318] mb-2">Live Transcript (demo)</div>
-              <div className="text-sm text-[#6B7280] min-h-[40px]">
-                {transcript ? transcript : "Start listening to see transcript here…"}
+      {/* Body */}
+      <div className="flex-1 p-6 grid grid-cols-12 gap-6 overflow-hidden">
+        <div className="col-span-12 lg:col-span-4 grid grid-cols-2 lg:grid-cols-1 gap-4">
+          <MetricCard title="Whisper Quality" value={quality.label} badgeTone={quality.tone} />
+          <MetricCard title="Mode" value={mode} badgeTone="info" />
+          <div className="col-span-2 lg:col-span-1 bg-white rounded-2xl border border-[#E6E8EC] p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-[#111318] font-semibold">Transcript</h4>
+              <div className="text-xs text-gray-500 flex items-center gap-2">
+                <Keyboard className="w-4 h-4" />
+                <span>M mic • W mode • Esc back</span>
               </div>
+            </div>
+            <div className="text-sm text-gray-700 leading-relaxed max-h-[260px] overflow-auto pr-2">
+              {transcript ? transcript : <span className="text-gray-400">Start the mic to see transcription.</span>}
             </div>
           </div>
         </div>
 
-        {/* Right Panel - Live Coaching */}
-        <div className="w-96 bg-[#F7F8FA] border-l border-[#E6E8EC] p-6 overflow-y-auto">
-          <h3 className="text-[22px] font-semibold mb-8">Live Coaching</h3>
-
-          {/* Metrics */}
-          <div className="space-y-5 mb-10">
-            <MetricCard title="Talk Balance" value={`You ${talkPct}%`} showProgress progressValue={talkPct} />
-            <MetricCard title="Engagement Score" value={`${engagement}/100`} showProgress progressValue={engagement} />
-            <MetricCard title="Clarity Score" value={`${clarity}/100`} showProgress progressValue={clarity} />
+        <div className="col-span-12 lg:col-span-8 overflow-auto bg-white rounded-2xl border border-[#E6E8EC] p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-[#111318] font-semibold text-lg">Whispers (focus mode)</h3>
+            <div className="text-xs text-gray-500">{mode === "Heuristic" ? "On-device" : mode === "LLM" ? "AI-only" : "Hybrid"}</div>
           </div>
 
-          {/* Whispers */}
-          <div>
-            <h4 className="text-lg font-semibold mb-5">Whispers</h4>
+          {isAnalyzing && <SkeletonWhisper />}
 
-            {whispers.length > 0 ? (
-              <div className="space-y-4">
-                {whispers.map((w, idx) => (
-                  <WhisperCard key={idx} message={w.message} type={w.type} timestamp={w.timestamp} />
-                ))}
-              </div>
-            ) : (
-              <div className="bg-white rounded-[14px] border border-[#E6E8EC] p-8 text-center shadow-[0_4px_16px_rgba(0,0,0,0.04)]">
-                <div className="w-12 h-12 bg-[#E6E8EC] rounded-full flex items-center justify-center mx-auto mb-3">
-                  <span className="text-[#6B7280] text-xl">💬</span>
-                </div>
-                <p className="text-[#6B7280] text-sm">
-                  {isListening ? "No tips yet — speak a bit to trigger whispers." : "Start listening to enable real-time whispers."}
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Tiny note to explain to demo viewers */}
-          <div className="text-xs text-[#6B7280] mt-6">
-            Demo uses browser speech recognition (no server cost). Tips appear on detected speech.
-          </div>
+          {whispers.length === 0 ? (
+            <div className="text-sm text-gray-500">Speak a bit—tips appear every ~8 seconds.</div>
+          ) : (
+            whispers.map((w, idx) => (
+              <WhisperCard
+                key={`${w.timestamp}-${idx}`}
+                message={`${w.source === "llm" ? "✨ " : ""}${w.message}`}
+                type={w.type}
+                timestamp={w.timestamp}
+              />
+            ))
+          )}
         </div>
       </div>
     </div>
