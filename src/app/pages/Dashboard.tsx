@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate } from 'react-router-dom';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { TrendingUp, TrendingDown, Plus, ArrowRight, MessageSquare } from 'lucide-react';
@@ -127,10 +127,8 @@ export function Dashboard() {
         <div>
           <h3 className="text-[22px] font-semibold mb-6 text-[#111318]">Recent Meeting Summary</h3>
           
-          <Card 
-            className="p-6 cursor-pointer hover:border-[#4C7DFF] transition-all"
-            onClick={() => navigate('/meeting/summary/last')}
-          >
+          <Card className="p-6 cursor-pointer hover:border-[#4C7DFF] transition-all" 
+          onClick={() => navigate('/meeting/summary/last')} >
             <div className="flex items-start justify-between mb-6">
               <div>
                 <h4 className="text-[#111318] font-semibold text-lg mb-1">Product Standup</h4>
